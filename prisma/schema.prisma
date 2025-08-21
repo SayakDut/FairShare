@@ -1,0 +1,148 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id                   String   @id @default(uuid())
+  email                String   @unique
+  fullName             String?  @map("full_name")
+  avatarUrl            String?  @map("avatar_url")
+  dietaryPreferences   String[] @map("dietary_preferences")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  createdGroups        Group[]        @relation("GroupCreator")
+  groupMemberships     GroupMember[]
+  createdExpenses      Expense[]      @relation("ExpenseCreator")
+  expenseSplits        ExpenseSplit[]
+  balancesOwed         Balance[]      @relation("BalanceFromUser")
+  balancesOwing        Balance[]      @relation("BalanceToUser")
+
+  @@map("users")
+}
+
+model Group {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  createdBy   String   @map("created_by")
+  inviteCode  String   @unique @map("invite_code")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  creator     User          @relation("GroupCreator", fields: [createdBy], references: [id], onDelete: Cascade)
+  members     GroupMember[]
+  expenses    Expense[]
+  balances    Balance[]
+
+  @@map("groups")
+}
+
+model GroupMember {
+  id       String    @id @default(uuid())
+  groupId  String    @map("group_id")
+  userId   String    @map("user_id")
+  role     GroupRole @default(MEMBER)
+  joinedAt DateTime  @default(now()) @map("joined_at")
+
+  // Relations
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, userId])
+  @@map("group_members")
+}
+
+model Expense {
+  id          String    @id @default(uuid())
+  groupId     String    @map("group_id")
+  createdBy   String    @map("created_by")
+  title       String
+  description String?
+  totalAmount Decimal   @map("total_amount") @db.Decimal(10, 2)
+  currency    String    @default("USD")
+  receiptUrl  String?   @map("receipt_url")
+  splitType   SplitType @default(EQUAL) @map("split_type")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  group        Group          @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  creator      User           @relation("ExpenseCreator", fields: [createdBy], references: [id], onDelete: Cascade)
+  items        ExpenseItem[]
+  splits       ExpenseSplit[]
+
+  @@map("expenses")
+}
+
+model ExpenseItem {
+  id          String   @id @default(uuid())
+  expenseId   String   @map("expense_id")
+  name        String
+  amount      Decimal  @db.Decimal(10, 2)
+  category    String?
+  dietaryTags String[] @map("dietary_tags")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  // Relations
+  expense Expense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+
+  @@map("expense_items")
+}
+
+model ExpenseSplit {
+  id         String   @id @default(uuid())
+  expenseId  String   @map("expense_id")
+  userId     String   @map("user_id")
+  amount     Decimal  @db.Decimal(10, 2)
+  percentage Decimal? @db.Decimal(5, 2)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  // Relations
+  expense Expense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([expenseId, userId])
+  @@map("expense_splits")
+}
+
+model Balance {
+  id         String   @id @default(uuid())
+  groupId    String   @map("group_id")
+  fromUserId String   @map("from_user_id")
+  toUserId   String   @map("to_user_id")
+  amount     Decimal  @db.Decimal(10, 2)
+  currency   String   @default("USD")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  group    Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  fromUser User  @relation("BalanceFromUser", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser   User  @relation("BalanceToUser", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, fromUserId, toUserId])
+  @@map("balances")
+}
+
+// Enums
+enum GroupRole {
+  ADMIN
+  MEMBER
+}
+
+enum SplitType {
+  EQUAL
+  PERCENTAGE
+  CUSTOM
+}

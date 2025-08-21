@@ -1,0 +1,289 @@
+# FairShare CI/CD Pipeline
+# 
+# This workflow runs tests, builds the application, performs security scans,
+# and deploys to Vercel. It requires several secrets to be configured in
+# GitHub repository settings.
+#
+# REQUIRED GitHub Secrets (must be set for basic functionality):
+# - SUPABASE_URL: Your Supabase project URL (will be used as NEXT_PUBLIC_SUPABASE_URL)
+# - SUPABASE_ANON_KEY: Your Supabase anonymous key (will be used as NEXT_PUBLIC_SUPABASE_ANON_KEY)
+# - SUPABASE_SERVICE_ROLE_KEY: Your Supabase service role key (for migrations)
+# - VERCEL_TOKEN: Your Vercel deployment token
+# - VERCEL_ORG_ID: Your Vercel organization ID
+# - VERCEL_PROJECT_ID: Your Vercel project ID
+# - DATABASE_URL: PostgreSQL connection string for database migrations
+#
+# OPTIONAL GitHub Secrets (for enhanced features):
+# - SNYK_TOKEN: Snyk security scanning token
+# - LHCI_GITHUB_APP_TOKEN: Lighthouse CI GitHub app token
+# - SLACK_WEBHOOK_URL: Slack webhook for deployment notifications
+# - CODECOV_TOKEN: Codecov token for coverage reports
+#
+# Setup Instructions:
+# 1. Go to your GitHub repo > Settings > Secrets and variables > Actions
+# 2. Add all required secrets listed above
+# 3. Optional: Add enhanced feature secrets for additional functionality
+# 4. Push to main branch to trigger deployment
+
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  NODE_VERSION: '20.x'
+
+jobs:
+  # Test job - runs linting, type checking, and unit tests
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run ESLint
+      run: npm run lint
+
+    - name: Run TypeScript type checking
+      run: npm run type-check
+
+    - name: Run unit and integration tests
+      run: npm run test:ci
+      env:
+        NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+    - name: Upload coverage reports to Codecov
+      uses: codecov/codecov-action@v3
+      if: ${{ secrets.CODECOV_TOKEN != '' }}
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        file: ./coverage/lcov.info
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+
+  # Build job - compiles the application
+  build:
+    name: Build Application
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Generate Prisma client
+      run: npx prisma generate
+
+    - name: Build Next.js application
+      run: npm run build
+      env:
+        NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: build-files
+        path: .next/
+        retention-days: 1
+
+  # Security job - runs vulnerability scans
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run npm security audit
+      run: npm audit --audit-level=high
+      continue-on-error: true
+
+    - name: Run Snyk security scan
+      uses: snyk/actions/node@master
+      if: ${{ secrets.SNYK_TOKEN != '' }}
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      with:
+        args: --severity-threshold=high
+      continue-on-error: true
+
+  # Lighthouse job - performance testing (optional, runs on PRs only)
+  lighthouse:
+    name: Lighthouse Performance Test
+    runs-on: ubuntu-latest
+    needs: build
+    if: ${{ github.event_name == 'pull_request' && secrets.LHCI_GITHUB_APP_TOKEN != '' }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Generate Prisma client
+      run: npx prisma generate
+
+    - name: Build application for Lighthouse
+      run: npm run build
+      env:
+        NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+    - name: Run Lighthouse CI
+      run: |
+        npm install -g @lhci/cli@0.12.x
+        lhci autorun
+      env:
+        LHCI_GITHUB_APP_TOKEN: ${{ secrets.LHCI_GITHUB_APP_TOKEN }}
+      continue-on-error: true
+
+  # Deploy preview - creates preview deployment for PRs
+  deploy-preview:
+    name: Deploy Preview
+    runs-on: ubuntu-latest
+    needs: [test, build]
+    if: ${{ github.event_name == 'pull_request' && secrets.VERCEL_TOKEN != '' }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Deploy to Vercel Preview
+      uses: amondnet/vercel-action@v25
+      with:
+        vercel-token: ${{ secrets.VERCEL_TOKEN }}
+        vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+        vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+        scope: ${{ secrets.VERCEL_ORG_ID }}
+
+    - name: Comment PR with preview URL
+      uses: actions/github-script@v6
+      if: success()
+      with:
+        script: |
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: '🚀 Preview deployment is ready! Check it out at the Vercel dashboard.'
+          })
+
+  # Production deployment - deploys to production on main branch
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [test, build, security]
+    if: ${{ github.ref == 'refs/heads/main' && secrets.VERCEL_TOKEN != '' }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Deploy to Vercel Production
+      uses: amondnet/vercel-action@v25
+      with:
+        vercel-token: ${{ secrets.VERCEL_TOKEN }}
+        vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+        vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+        vercel-args: '--prod'
+        scope: ${{ secrets.VERCEL_ORG_ID }}
+
+    - name: Notify deployment success
+      uses: 8398a7/action-slack@v3
+      if: ${{ success() && secrets.SLACK_WEBHOOK_URL != '' }}
+      with:
+        status: success
+        text: '🚀 FairShare deployed successfully to production!'
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+    - name: Notify deployment failure
+      uses: 8398a7/action-slack@v3
+      if: ${{ failure() && secrets.SLACK_WEBHOOK_URL != '' }}
+      with:
+        status: failure
+        text: '❌ FairShare deployment failed!'
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # Database migration - runs after successful production deployment
+  database-migration:
+    name: Database Migration
+    runs-on: ubuntu-latest
+    needs: deploy-production
+    if: ${{ github.ref == 'refs/heads/main' && secrets.DATABASE_URL != '' }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Generate Prisma client
+      run: npx prisma generate
+
+    - name: Run database schema push
+      run: npx prisma db push
+      env:
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      continue-on-error: true
+
+    - name: Verify database schema
+      run: npx prisma db pull
+      env:
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      continue-on-error: true

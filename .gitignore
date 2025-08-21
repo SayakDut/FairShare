@@ -1,0 +1,14 @@
+# Node modules
+node_modules/
+
+# Environment variables
+.env
+
+# Next.js build outputs
+.next/
+
+# Coverage reports
+coverage/
+
+# macOS files
+.DS_Store
