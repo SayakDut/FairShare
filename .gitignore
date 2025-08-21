@@ -12,3 +12,6 @@ coverage/
 
 # macOS files
 .DS_Store
+
+renamesummary.md
+
